@@ -89,8 +89,11 @@ import {
   Utensils,
   Video,
   Watch,
+  Navigation,
+  Copy,
   Lightbulb,
-  SkipForward
+  SkipForward,
+  RefreshCw
 } from 'lucide-react'
 
 // --- БИБЛИОТЕКА ИКОНОК ---
@@ -149,12 +152,16 @@ function ExpandableCard({
   title,
   subtitle,
   content,
-  isNew
+  isNew,
+  onSpeak,
+  isSpeaking,
 }: {
   title: string
   subtitle?: string
   content: string
   isNew?: boolean
+  onSpeak?: () => void
+  isSpeaking?: boolean
 }) {
   const [isOpen, setIsOpen] = useState(false)
 
@@ -175,13 +182,15 @@ function ExpandableCard({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {isOpen && (
+          {isOpen && onSpeak && (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation() }}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-white dark:bg-neutral-700 text-neutral-700 dark:text-white shadow-sm transition-colors duration-500 hover:bg-neutral-100 dark:hover:bg-neutral-600 active:scale-90 animate-scale-in"
+              onClick={(e) => { e.stopPropagation(); onSpeak(); }}
+              className={`flex h-10 w-10 items-center justify-center rounded-full shadow-sm transition-colors duration-500 hover:bg-neutral-100 dark:hover:bg-neutral-600 active:scale-90 animate-scale-in ${
+                isSpeaking ? 'bg-[#007AFF] text-white animate-pulse' : 'bg-white dark:bg-neutral-700 text-neutral-700 dark:text-white'
+              }`}
             >
-              <Volume2 className="h-5 w-5" strokeWidth={2.5} />
+              {isSpeaking ? <VolumeX className="h-5 w-5" strokeWidth={2.5} /> : <Volume2 className="h-5 w-5" strokeWidth={2.5} />}
             </button>
           )}
           <button
@@ -209,6 +218,275 @@ function ExpandableCard({
         </div>
       </div>
     </section>
+  )
+}
+
+// --- МОДАЛКА КЛАДБИЩА (iOS Apple Maps Style) ---
+function CemeteryModal({ cemeteryInfo, setCemeteryInfo, onClose, onSave, isOwner, showToast, uploadFileToSupabase }: {
+  cemeteryInfo: any,
+  setCemeteryInfo: (v: any) => void,
+  onClose: () => void,
+  onSave: (v: any) => Promise<void>,
+  isOwner: boolean,
+  showToast: (msg: string) => void,
+  uploadFileToSupabase: (file: File, pathPrefix: string) => Promise<string | null>,
+}) {
+  const [isEditingCem, setIsEditingCem] = useState(false)
+  const [draft, setDraft] = useState(cemeteryInfo)
+  const [weather, setWeather] = useState<{ temp: number; code: number } | null>(null)
+  const [fullscreenPhoto, setFullscreenPhoto] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const isEmpty = !cemeteryInfo.name && !cemeteryInfo.sector
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    showToast('Загрузка фото...')
+    const url = await uploadFileToSupabase(file, 'cemetery')
+    if (url) {
+      const updated = { ...cemeteryInfo, photoUrl: url }
+      setCemeteryInfo(updated)
+      setDraft(updated)
+      await onSave(updated)
+      showToast('Фотография сохранена')
+    }
+  }
+
+  useEffect(() => {
+    fetch('https://api.open-meteo.com/v1/forecast?latitude=47.0105&longitude=28.8638&current=temperature_2m,weather_code')
+      .then(r => r.json())
+      .then(d => setWeather({ temp: Math.round(d.current.temperature_2m), code: d.current.weather_code }))
+      .catch(() => {})
+  }, [])
+
+  const weatherLabel = (code: number, temp: number) => {
+    if (code === 0) return `☀️ +${temp}°C, ясно, Кишинёв`
+    if (code <= 3) return `🌤️ +${temp}°C, облачно, Кишинёв`
+    if (code <= 49) return `🌫️ +${temp}°C, туман, Кишинёв`
+    if (code <= 69) return `🌧️ +${temp}°C, дождь, Кишинёв`
+    if (code <= 79) return `❄️ +${temp}°C, снег, Кишинёв`
+    if (code <= 99) return `⛈️ +${temp}°C, гроза, Кишинёв`
+    return `🌡️ +${temp}°C, Кишинёв`
+  }
+
+  const handleDraftChange = (field: string, value: string) => {
+    setDraft({ ...draft, [field]: value })
+  }
+
+  const handleAutofill = () => {
+    const n = draft.name.toLowerCase()
+    let schedule = 'Ежедневно 08:00 – 17:00'
+    let transit = 'Уточняйте городские маршруты'
+
+    if (n.includes('дойна') || n.includes('лазаря')) {
+      schedule = 'Ежедневно 07:00 – 18:00'
+      transit = 'Автобусы: 27, 28, 38, маршрутки 134, 162'
+    } else if (n.includes('армянское') || n.includes('центральное')) {
+      transit = 'Троллейбусы: 2, 3, 9, 10, 24, автобусы 9, 11'
+    }
+
+    setDraft({ ...draft, schedule, transit })
+  }
+
+  const handleSave = async () => {
+    await onSave(draft)
+    setIsEditingCem(false)
+  }
+
+  const handleCancel = () => {
+    setDraft(cemeteryInfo)
+    setIsEditingCem(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-[90] flex flex-col justify-end">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-[#F2F2F7] dark:bg-[#1C1C1E] rounded-t-[32px] animate-slideUp z-10 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar">
+        {/* Грейпер */}
+        <div className="flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 rounded-full bg-neutral-300 dark:bg-neutral-600" />
+        </div>
+
+        <div className="px-5 pb-10 pt-2">
+          {/* Шапка */}
+          <div className="flex items-start justify-between mb-5">
+            <div>
+              <p className="text-[12px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest mb-0.5">Место упокоения</p>
+              <h3 className="text-[22px] font-bold dark:text-white leading-tight">{cemeteryInfo.name || 'Не указано'}</h3>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              {isOwner && !isEditingCem && (
+                <button onClick={() => { setDraft(cemeteryInfo); setIsEditingCem(true); }} className="flex items-center gap-1.5 bg-[#007AFF]/10 text-[#007AFF] rounded-full px-3 py-1.5 text-[13px] font-bold active:scale-90 transition-all">
+                  <Pencil className="w-3.5 h-3.5" strokeWidth={2.5} /> Изменить
+                </button>
+              )}
+              {isEditingCem && (
+                <>
+                  <button onClick={handleCancel} className="text-[13px] font-bold text-neutral-500 px-3 py-1.5 rounded-full bg-neutral-200 dark:bg-white/10 active:scale-90">Отмена</button>
+                  <button onClick={handleSave} className="text-[13px] font-bold text-white px-3 py-1.5 rounded-full bg-[#007AFF] active:scale-90">Готово</button>
+                </>
+              )}
+              <button onClick={onClose} className="p-1.5 bg-neutral-200 dark:bg-white/10 rounded-full active:scale-90">
+                <X className="w-4 h-4 dark:text-white" strokeWidth={2.5} />
+              </button>
+            </div>
+          </div>
+
+          {/* Empty State */}
+          {isEmpty && !isEditingCem ? (
+            <div className="flex flex-col items-center py-10 gap-4">
+              <div className="w-16 h-16 bg-neutral-200 dark:bg-white/10 rounded-full flex items-center justify-center">
+                <MapPin className="w-8 h-8 text-neutral-400" strokeWidth={2} />
+              </div>
+              <p className="text-[16px] font-bold text-neutral-600 dark:text-neutral-300">Место упокоения ещё не указано</p>
+              {isOwner && (
+                <button onClick={() => { setDraft(cemeteryInfo); setIsEditingCem(true); }} className="flex items-center gap-2 bg-[#007AFF] text-white rounded-2xl px-6 py-3 text-[15px] font-bold shadow-lg active:scale-95 transition-all">
+                  <MapPin className="w-4 h-4" strokeWidth={2.5} /> Добавить информацию
+                </button>
+              )}
+            </div>
+          ) : isEditingCem ? (
+            // Форма редактирования
+            <div className="flex flex-col gap-3 mb-5">
+              <button onClick={handleAutofill} className="flex items-center justify-center gap-2 bg-[#007AFF]/10 text-[#007AFF] rounded-[16px] py-3 text-[14px] font-bold active:scale-95 transition-all">
+                <RefreshCw className="w-4 h-4" /> ✨ Подтянуть данные кладбища
+              </button>
+              
+              <div className="bg-white dark:bg-white/10 rounded-[16px] p-3 shadow-sm flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest mb-1">Фотография места</p>
+                  <p className="text-[13px] text-neutral-600 dark:text-neutral-300">{draft.photoUrl ? 'Фото загружено' : 'Фото не выбрано'}</p>
+                </div>
+                <button onClick={() => fileInputRef.current?.click()} className="px-4 py-2 bg-neutral-100 dark:bg-neutral-800 rounded-full text-[13px] font-bold active:scale-95 text-[#007AFF]">
+                  {draft.photoUrl ? 'Изменить' : 'Загрузить'}
+                </button>
+                <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handlePhotoUpload} />
+              </div>
+
+              {[
+                { field: 'name', label: 'Название кладбища', placeholder: 'Кладбище «Святого Лазаря» (Дойна)' },
+                { field: 'sector', label: 'Сектор / Квартал / Место', placeholder: 'Сектор 12, Квартал 4, Место 12' },
+                { field: 'schedule', label: 'Часы работы', placeholder: 'Ежедневно 07:00 – 18:00' },
+                { field: 'note', label: 'Полезно знать (заметка)', placeholder: '' },
+                { field: 'transit', label: 'Транспорт', placeholder: 'Автобусы...' },
+              ].map(({ field, label, placeholder }) => (
+                <div key={field} className="bg-white dark:bg-white/10 rounded-[16px] p-3 shadow-sm">
+                  <p className="text-[11px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest mb-1">{label}</p>
+                  <input
+                    value={(draft as any)[field]}
+                    onChange={(e) => handleDraftChange(field, e.target.value)}
+                    className="w-full bg-transparent text-[15px] dark:text-white outline-none"
+                    placeholder={placeholder}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <>
+              {/* Три кнопки действия */}
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <button onClick={() => window.open(`https://maps.apple.com/?q=${encodeURIComponent(cemeteryInfo.name)}`, '_blank')} className="flex flex-col items-center gap-2 bg-white dark:bg-white/10 rounded-[20px] py-4 px-2 shadow-sm active:scale-95 transition-all">
+                  <div className="w-11 h-11 bg-[#007AFF]/10 rounded-full flex items-center justify-center">
+                    <Navigation className="w-5 h-5 text-[#007AFF]" strokeWidth={2} />
+                  </div>
+                  <span className="text-[12px] font-bold text-neutral-700 dark:text-neutral-200">Добраться</span>
+                </button>
+
+                <button onClick={() => {
+                  const routeUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cemeteryInfo.name + ' ' + (cemeteryInfo.sector || ''))}`;
+                  navigator.clipboard.writeText(routeUrl);
+                  showToast('Умная ссылка на маршрут скопирована!');
+                }} className="flex flex-col items-center gap-2 bg-white dark:bg-white/10 rounded-[20px] py-4 px-2 shadow-sm active:scale-95 transition-all">
+                  <div className="w-11 h-11 bg-[#007AFF]/10 rounded-full flex items-center justify-center">
+                    <Copy className="w-5 h-5 text-[#007AFF]" strokeWidth={2} />
+                  </div>
+                  <span className="text-[12px] font-bold text-neutral-700 dark:text-neutral-200">Копировать</span>
+                </button>
+
+                <button onClick={() => {
+                  if (cemeteryInfo.photoUrl) {
+                    setFullscreenPhoto(cemeteryInfo.photoUrl);
+                  } else if (isOwner) {
+                    fileInputRef.current?.click();
+                  } else {
+                    showToast('Фотография не загружена');
+                  }
+                }} className="flex flex-col items-center gap-2 bg-white dark:bg-white/10 rounded-[20px] py-4 px-2 shadow-sm active:scale-95 transition-all relative">
+                  <div className="w-11 h-11 bg-[#007AFF]/10 rounded-full flex items-center justify-center">
+                    <Camera className="w-5 h-5 text-[#007AFF]" strokeWidth={2} />
+                  </div>
+                  <span className="text-[12px] font-bold text-neutral-700 dark:text-neutral-200">Фотография</span>
+                  {!cemeteryInfo.photoUrl && isOwner && (
+                     <div className="absolute top-2 right-2 bg-white rounded-full p-1 shadow-sm"><Pencil className="w-3 h-3 text-[#007AFF]" /></div>
+                  )}
+                </button>
+                <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handlePhotoUpload} />
+              </div>
+
+              {/* Блоки информации */}
+              <div className="flex flex-col gap-3 mb-4">
+                {cemeteryInfo.note && (
+                  <div className="bg-white dark:bg-white/10 rounded-[20px] p-4 shadow-sm">
+                    <p className="text-[11px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest mb-2">Полезно знать</p>
+                    <p className="text-[15px] text-neutral-800 dark:text-neutral-200 leading-relaxed">{cemeteryInfo.note}</p>
+                  </div>
+                )}
+                <div className="bg-white dark:bg-white/10 rounded-[20px] p-4 shadow-sm">
+                  <p className="text-[11px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest mb-2">Локация</p>
+                  {cemeteryInfo.sector && <p className="text-[15px] font-bold text-neutral-800 dark:text-neutral-200">{cemeteryInfo.sector}</p>}
+                  {cemeteryInfo.schedule && <p className="text-[14px] text-neutral-600 dark:text-neutral-400 mt-1">{cemeteryInfo.schedule}</p>}
+                  <p className="text-[13px] text-neutral-500 dark:text-neutral-400 mt-1">
+                    {weather ? weatherLabel(weather.code, weather.temp) : '⏳ Загрузка погоды...'}
+                  </p>
+                  {cemeteryInfo.transit && <p className="text-[13px] text-[#007AFF] mt-2 font-medium">{cemeteryInfo.transit}</p>}
+                </div>
+              </div>
+
+              {/* Кнопки навигации */}
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => window.open(`https://maps.apple.com/?q=${encodeURIComponent(cemeteryInfo.name)}`, '_blank')}
+                  className="flex items-center justify-center gap-2.5 bg-white dark:bg-white/10 rounded-[20px] py-4 shadow-sm active:scale-95 transition-all"
+                >
+                  <img src="/images/AppleMaps.ico.png" alt="Apple Maps" className="w-6 h-6 object-contain" />
+                  <span className="text-[14px] font-bold text-neutral-800 dark:text-neutral-100">Apple Maps</span>
+                </button>
+                <button
+                  onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cemeteryInfo.name)}`, '_blank')}
+                  className="flex items-center justify-center gap-2.5 bg-white dark:bg-white/10 rounded-[20px] py-4 shadow-sm active:scale-95 transition-all"
+                >
+                  <img src="/images/GoogleMaps.ico.png" alt="Google Maps" className="w-6 h-6 object-contain" />
+                  <span className="text-[14px] font-bold text-neutral-800 dark:text-neutral-100">Google Maps</span>
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      
+      {/* FULLSCREEN PHOTO */}
+      {fullscreenPhoto && (
+        <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col backdrop-blur-xl">
+          <div className="flex justify-between items-center p-6">
+            <h3 className="text-white font-bold tracking-widest text-[14px] uppercase">Фотография места</h3>
+            <button onClick={() => setFullscreenPhoto(null)} className="p-3 bg-white/10 rounded-full active:scale-90 transition-colors hover:bg-white/20">
+              <X className="w-6 h-6 text-white" strokeWidth={2.5} />
+            </button>
+          </div>
+          <div className="flex-1 flex items-center justify-center p-4">
+             <img src={fullscreenPhoto} alt="Cemetery" className="max-w-full max-h-full object-contain rounded-[20px] shadow-2xl" />
+          </div>
+          {isOwner && (
+             <div className="p-6 flex justify-center pb-12">
+               <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 bg-white/10 text-white rounded-[20px] px-6 py-4 text-[15px] font-bold shadow-lg active:scale-95 transition-all hover:bg-white/20">
+                 <Camera className="w-5 h-5" strokeWidth={2.5} /> Обновить фотографию
+               </button>
+             </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -292,6 +570,60 @@ export default function Page() {
   const [showAiChat, setShowAiChat] = useState(false)
   const [showPhotoRestore, setShowPhotoRestore] = useState(false)
   const [showTextFix, setShowTextFix] = useState(false)
+  const [showCemeteryModal, setShowCemeteryModal] = useState(false)
+  const [isEditingCemetery, setIsEditingCemetery] = useState(false)
+  const [cemeteryDraft, setCemeteryDraft] = useState({ name: '', sector: '', schedule: '', note: '', transit: '' })
+  const [showColorPicker, setShowColorPicker] = useState(false)
+  const [toastMsg, setToastMsg] = useState('')
+
+  // === ДАННЫЕ ПРОФИЛЯ (ДОП) ===
+  const [bgColor, setBgColor] = useState('#E5E5E5')
+  const [cemeteryInfo, setCemeteryInfo] = useState({
+    name: '',
+    sector: '',
+    schedule: '',
+    note: '',
+    transit: ''
+  })
+
+  // === TTS ===
+  const [ttsSectionId, setTtsSectionId] = useState<string | null>(null)
+
+  const speakText = (text: string, id: string) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return
+    if (ttsSectionId === id) {
+      window.speechSynthesis.cancel()
+      setTtsSectionId(null)
+      return
+    }
+    window.speechSynthesis.cancel()
+    const utt = new SpeechSynthesisUtterance(text)
+    utt.lang = 'ru-RU'
+    utt.rate = 0.95
+    utt.onend = () => setTtsSectionId(null)
+    utt.onerror = () => setTtsSectionId(null)
+    setTtsSectionId(id)
+    window.speechSynthesis.speak(utt)
+  }
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg)
+    setTimeout(() => setToastMsg(''), 2500)
+  }
+
+  const handleShare = async () => {
+    const shareData = {
+      title: `Память о ${profileName}`,
+      text: `Страница памяти и биография ${profileName} на Memernity`,
+      url: window.location.href,
+    }
+    if (navigator.share) {
+      try { await navigator.share(shareData) } catch {}
+    } else {
+      await navigator.clipboard.writeText(window.location.href)
+      showToast('Ссылка скопирована')
+    }
+  }
 
   // === SUPABASE ===
   useEffect(() => {
@@ -306,6 +638,8 @@ export default function Page() {
         if (data.profile_image) setAvatarUrl(data.profile_image);
         if (data.cover_image) setCoverUrl(data.cover_image);
         if (data.media_categories) setMediaCategories(data.media_categories);
+        if (data.bg_color) setBgColor(data.bg_color);
+        if (data.cemetery_info) setCemeteryInfo(data.cemetery_info);
       }
     };
     fetchProfile();
@@ -322,6 +656,8 @@ export default function Page() {
       facts: updatedData.facts ?? facts,
       letter_text: updatedData.letterText ?? letterText,
       media_categories: updatedData.mediaCategories ?? mediaCategories,
+      bg_color: updatedData.bgColor ?? bgColor,
+      cemetery_info: updatedData.cemeteryInfo ?? cemeteryInfo,
     });
     
     if (error) console.error("Ошибка сохранения:", error.message || error);
@@ -331,6 +667,15 @@ export default function Page() {
 
   const { messages, input, setInput, handleInputChange, handleSubmit, isLoading, append, setMessages } = useChat({
     api: '/api/chat',
+    body: {
+      profileContext: {
+        profileName,
+        facts,
+        tags,
+        bioSections,
+        comments,
+      }
+    },
     onFinish: () => {
       // сохраняем историю после каждого завершённого ответа
     },
@@ -849,8 +1194,8 @@ export default function Page() {
   return (
     <div className={isDarkMode ? 'dark' : ''}>
       <div 
-        className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-gradient-to-b from-neutral-300 via-neutral-200 to-neutral-300 dark:from-neutral-950 dark:via-[#1A1A1A] dark:to-neutral-950 text-neutral-900 dark:text-white transition-colors duration-500 font-sans"
-        style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif' }}
+        className="relative flex h-[100dvh] w-full flex-col overflow-hidden text-neutral-900 dark:text-white transition-colors duration-500 font-sans dark:bg-zinc-950"
+        style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif', backgroundColor: isDarkMode ? '' : (bgColor || '#E5E5E5') }}
       >
         <style dangerouslySetInnerHTML={{__html: `
           @keyframes dropBounce { 0% { transform: scale(0); opacity: 0; border-radius: 100px; } 40% { transform: scale(1.1); opacity: 1; border-radius: 40px; } 70% { transform: scale(0.95); opacity: 1; border-radius: 40px; } 100% { transform: scale(1); opacity: 1; border-radius: 40px; } }
@@ -874,6 +1219,11 @@ export default function Page() {
           .typing-indicator::after { content: ''; animation: typingDots 1.5s infinite; }
         `}} />
 
+        {/* ФОНОВЫЕ ГРАДИЕНТЫ — только светлая тема */}
+        {!isDarkMode && <>
+          <div className="pointer-events-none absolute top-0 left-0 right-0 h-[304px] z-0" style={{ background: 'linear-gradient(to bottom, #CDCDCD 0%, transparent 100%)' }} />
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[304px] z-0" style={{ background: 'linear-gradient(to top, #CDCDCD 0%, transparent 100%)' }} />
+        </>}
         <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 h-[290px] bg-gradient-to-t from-[#494949] dark:from-black to-transparent transition-colors duration-500" />
 
         {/* ================= ГАЙД (ЛАЗЕРНЫЙ) ================= */}
@@ -1134,16 +1484,18 @@ export default function Page() {
 
         {/* НАСТРОЙКА ТЕГА */}
         {editingTagId && (
-          <div className="fixed inset-0 z-[70] flex flex-col justify-end">
+          <div className="fixed inset-0 z-[300] flex flex-col justify-end">
              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-colors duration-500" onClick={() => setEditingTagId(null)} />
              <div className="relative bg-[#EAEAEA] dark:bg-neutral-900 rounded-t-[40px] p-6 pb-12 animate-slideUp z-10 h-[85vh] flex flex-col transition-colors duration-500">
                <div className="flex justify-between items-center mb-6">
                  <h3 className="text-xl font-bold dark:text-white transition-colors duration-500">Настройка тега</h3>
                  <div className="flex gap-2">
                     <button onClick={() => setTagToDelete(editingTagId)} className="bg-red-500/10 text-red-500 p-2 rounded-full active:scale-95 transition-colors duration-500"><Trash2 className="w-5 h-5" strokeWidth={2.5} /></button>
-                    <button onClick={() => {
-                       setTags(tags.map(t => t.id === editingTagId ? editTagData : t));
+                    <button onClick={async () => {
+                       const updatedTags = tags.map(t => t.id === editingTagId ? editTagData : t);
+                       setTags(updatedTags);
                        setEditingTagId(null);
+                       await saveProfileToDb({ tags: updatedTags });
                      }} className="bg-neutral-900 dark:bg-white text-white dark:text-black px-5 py-2 rounded-full font-bold active:scale-95 transition-colors duration-500">Сохранить</button>
                  </div>
                </div>
@@ -1552,6 +1904,26 @@ export default function Page() {
           </div>
         )}
 
+        {/* TOAST */}
+        {toastMsg && (
+          <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[200] bg-neutral-900/90 dark:bg-white/90 text-white dark:text-neutral-900 text-[14px] font-bold px-5 py-3 rounded-full shadow-2xl backdrop-blur-xl animate-slideUp pointer-events-none">
+            {toastMsg}
+          </div>
+        )}
+
+        {/* МОДАЛКА ЛОКАЦИИ — КЛАДБИЩЕ */}
+        {showCemeteryModal && (
+          <CemeteryModal
+            cemeteryInfo={cemeteryInfo}
+            setCemeteryInfo={setCemeteryInfo}
+            onClose={() => setShowCemeteryModal(false)}
+            onSave={async (updated) => { setCemeteryInfo(updated); await saveProfileToDb({ cemeteryInfo: updated }); }}
+            isOwner={isOwner}
+            showToast={showToast}
+            uploadFileToSupabase={uploadFileToSupabase}
+          />
+        )}
+
         {/* 3. ИСПРАВЛЕНИЕ ТЕКСТА */}
         {showTextFix && (
           <div className="fixed inset-0 z-[80] flex flex-col justify-end">
@@ -1661,12 +2033,40 @@ export default function Page() {
             </button>
           </header>
 
+          {/* КНОПКА ПАЛИТРЫ — fixed, над навигацией, только светлая тема */}
+          {isEditing && !isDarkMode && (
+            <div className={`fixed left-4 md:left-6 md:bottom-6 z-50 transition-all duration-300 ease-in-out ${isScrollingDown ? 'bottom-5' : 'bottom-[100px]'}`}>
+              <button
+                onClick={() => setShowColorPicker(v => !v)}
+                className="w-10 h-10 rounded-full shadow-lg border-2 border-white active:scale-90 transition-transform"
+                style={{ background: 'conic-gradient(red, yellow, lime, aqua, blue, magenta, red)' }}
+              />
+              {showColorPicker && (
+                <div className="absolute bottom-12 left-0 z-50 backdrop-blur-xl bg-white/95 p-4 rounded-3xl shadow-2xl border border-white/60 animate-scale-in w-[210px]">
+                  <p className="text-[12px] font-bold text-neutral-500 mb-3">Цвет фона</p>
+                  <div className="grid grid-cols-4 gap-2 mb-3">
+                    {['#E5E5E5','#F0EBE3','#E3EDF0','#EBE3F0','#F0E3E3','#E3F0E6','#F5F0E0','#E8E8F5'].map(c => (
+                      <button key={c} onClick={async () => { setBgColor(c); setShowColorPicker(false); await saveProfileToDb({ bgColor: c }); }} className="w-9 h-9 rounded-full border-2 transition-transform active:scale-90 hover:scale-110" style={{ backgroundColor: c, borderColor: bgColor === c ? '#007AFF' : 'transparent' }} />
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[12px] font-bold text-neutral-500">Свой цвет</span>
+                    <label className="cursor-pointer">
+                      <div className="w-8 h-8 rounded-full border-2 border-neutral-300" style={{ backgroundColor: bgColor }} />
+                      <input type="color" value={bgColor} onChange={async (e) => { setBgColor(e.target.value); await saveProfileToDb({ bgColor: e.target.value }); }} className="hidden" />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div key={active} className="relative z-10 px-4 animate-fade-blur mt-4">
             {/* ТУЛБАР ВЕРХНЕЙ ПАНЕЛИ */}
             <div className="flex items-center justify-between mb-4 relative h-10">
               <div className="flex items-center gap-2">
-                <RoundButton id="guide-target-0"><MapPin className="h-4 w-4" strokeWidth={2.5} /></RoundButton>
-                <RoundButton><Bookmark className="h-4 w-4" strokeWidth={2.5} /></RoundButton>
+                <RoundButton id="guide-target-0" onClick={() => setShowCemeteryModal(true)}><MapPin className="h-4 w-4" strokeWidth={2.5} /></RoundButton>
+                <RoundButton onClick={handleShare}><Share2 className="h-4 w-4" strokeWidth={2.5} /></RoundButton>
                 <RoundButton id="guide-target-1" onClick={() => setIsDarkMode(!isDarkMode)}>
                   {isDarkMode ? <Sun className="h-4 w-4 text-yellow-400 transition-colors duration-500" strokeWidth={2.5} /> : <Moon className="h-4 w-4 text-[#007AFF] transition-colors duration-500" strokeWidth={2.5} />}
                 </RoundButton>
@@ -1679,7 +2079,6 @@ export default function Page() {
                   </button>
                 )}
                 
-                {/* КАРАНДАШ ВСЕГДА ВИДЕН */}
                 <button 
                   id="guide-target-2"
                   onClick={() => {
@@ -1732,7 +2131,7 @@ export default function Page() {
                             {React.createElement(ICON_LIBRARY[tag.icon] || Star, { className: "w-4 h-4", strokeWidth: 2.5 })}{tag.label}
                           </button>
                           {isEditing && (
-                            <button onClick={(e) => { e.stopPropagation(); setEditTagData(tag); setEditingTagId(tag.id); }} className="absolute -top-2 -right-2 bg-[#007AFF] text-white rounded-full p-1.5 shadow-md active:scale-90 transition-transform z-10"><Settings className="w-3 h-3" strokeWidth={3} /></button>
+                            <button onClick={(e) => { e.stopPropagation(); e.preventDefault(); setEditTagData(tag); setEditingTagId(tag.id); }} className="absolute -top-2 -right-2 bg-[#007AFF] text-white rounded-full p-1.5 shadow-md active:scale-90 transition-transform z-10"><Settings className="w-3 h-3" strokeWidth={3} /></button>
                           )}
                         </div>
                       ))}
@@ -1783,7 +2182,14 @@ export default function Page() {
                       <button onClick={() => setBioSectionToDelete(section.id)} className="absolute top-6 right-6 p-2 bg-red-500/10 text-red-500 rounded-full hover:bg-red-500 hover:text-white transition-all duration-300 active:scale-90"><Trash2 className="w-5 h-5" strokeWidth={2.5} /></button>
                     </section>
                   ) : (
-                    <ExpandableCard key={section.id || `section-view-${i}`} title={section.title} content={section.content} isNew={section.isNew} />
+                    <ExpandableCard
+                      key={section.id || `section-view-${i}`}
+                      title={section.title}
+                      content={section.content}
+                      isNew={section.isNew}
+                      onSpeak={() => speakText(section.content, section.id || `s${i}`)}
+                      isSpeaking={ttsSectionId === (section.id || `s${i}`)}
+                    />
                   )
                 ))}
                 {isEditing && <button onClick={() => setBioSections([...bioSections, { id: `sec-${Date.now()}`, title: 'Новая глава', content: '', isNew: true }])} className="mt-4 flex items-center gap-2 text-[15px] font-bold text-[#007AFF] border border-dashed border-[#007AFF]/50 bg-[#007AFF]/5 rounded-[40px] px-4 py-4 w-full justify-center active:scale-95 transition-colors duration-500"><Plus className="w-5 h-5" strokeWidth={3} /> Добавить главу биографии</button>}
